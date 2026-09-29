@@ -153,7 +153,7 @@ remote-fs-node requires an HTTP server implementing these endpoints:
 | `/api/fs/watch` | GET | SSE file watcher |
 | `/api/fs/fd/*` | mixed | Stateful fd session: `open`/`read`/`write`/`close`/`fstat`/`ftruncate`/`fsync`/`fchmod`/`fchown`/`futimes` |
 
-A reference Python/FastAPI server implementation is published separately as part of the remote-fs ecosystem.
+A reference Python/FastAPI server implementation is published as [remote-ops-server](https://github.com/tastypear/remote-ops-server).
 
 ## Test
 
