@@ -144,8 +144,14 @@ remote-fs-node requires an HTTP server implementing these endpoints:
 | `/api/fs/move` | POST | Move/rename (atomic on same filesystem) |
 | `/api/fs/copy` | POST | Copy file/dir |
 | `/api/fs/chmod` | POST | Change mode |
+| `/api/fs/chown` | POST | Change owner |
+| `/api/fs/utimes` | POST | Set access/modify times |
+| `/api/fs/truncate` | POST | Truncate file |
 | `/api/fs/symlink` | POST | Create symlink |
 | `/api/fs/readlink` | GET | Read symlink target |
+| `/api/fs/link` | POST | Create hard link |
+| `/api/fs/realpath` | POST | Resolve canonical path |
+| `/api/fs/mkdtemp` | POST | Create temp directory |
 | `/api/fs/access` | GET | Check accessibility |
 | `/api/fs/touch` | POST | Create empty file |
 | `/api/fs/batch` | POST | Batch operations |
