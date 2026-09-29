@@ -1,0 +1,9 @@
+node_modules/
+*.log
+*.out
+
+# server implementation (published separately as remote-fs-py)
+_server/
+
+# local temp artifacts
+rsf-tmp*
