@@ -7,7 +7,7 @@ const remoteFs = require("../index.js");
 remoteFs.configure({ baseURL: "http://127.0.0.1:8766", token: "testtoken123" });
 const fs = remoteFs.fs;
 const TESTDIR = "/tmp/rfs_watch_test";
-let passed = 0;
+let passed = 0, failed = 0;
 
 async function test(name, fn) {
   try {
@@ -17,6 +17,7 @@ async function test(name, fn) {
   } catch (err) {
     console.log("FAIL  " + name + ": " + err.message);
     console.error(err.stack);
+    failed++;
   }
 }
 
@@ -166,8 +167,8 @@ async function run() {
 
   // ─── Cleanup ───
   try { await fs.promises.rm(TESTDIR); } catch {}
-  console.log("\n=== " + passed + " passed ===");
-  process.exit(0);
+  console.log("\n=== " + passed + " passed, " + failed + " failed ===");
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 run().catch((err) => { console.error("FATAL:", err); process.exit(1); });

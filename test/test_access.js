@@ -8,11 +8,11 @@ remoteFs.configure({ baseURL: "http://127.0.0.1:8766", token: "testtoken123" });
 const fs = remoteFs.fs;
 const c = fs.constants;
 const TESTDIR = "/tmp/rfs_access_test";
-let passed = 0;
+let passed = 0, failed = 0;
 
 async function test(name, fn) {
   try { await fn(); console.log("PASS  " + name); passed++; }
-  catch (err) { console.log("FAIL  " + name + ": " + err.message); console.error(err.stack); }
+  catch (err) { console.log("FAIL  " + name + ": " + err.message); console.error(err.stack); failed++; }
 }
 
 async function run() {
@@ -81,8 +81,8 @@ async function run() {
   // Cleanup
   await fs.promises.chmod(TESTDIR + "/readonly.txt", 0o644);
   try { await fs.promises.rm(TESTDIR); } catch {}
-  console.log("\n=== " + passed + " passed ===");
-  process.exit(0);
+  console.log("\n=== " + passed + " passed, " + failed + " failed ===");
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 run().catch((err) => { console.error("FATAL:", err); process.exit(1); });
