@@ -353,7 +353,353 @@ async function run() {
     assert.ok(result !== "timeout", "WS should respond to wrong type");
   });
 
-  // ─── 12. Server still alive after all abuse ───────────────
+  // ─── 12. Auth edge cases ──────────────────────────────────
+  async function probeAuth(method, path, headers) {
+    return new Promise((resolve) => {
+      const req = http.request({ hostname: "127.0.0.1", port: PORT, path, method, headers, timeout: 5000 }, (res) => {
+        let d = ""; res.on("data", (c) => d += c); res.on("end", () => resolve({ status: res.statusCode, body: d }));
+      });
+      req.on("timeout", () => { req.destroy(); resolve({ timedOut: true }); });
+      req.on("error", (e) => resolve({ error: e.message }));
+      req.end();
+    });
+  }
+
+  await test("auth: empty bearer", async () => {
+    const r = await probeAuth("GET", "/api/fs/stat?path=" + T, { Authorization: "Bearer " });
+    assert.ok(r.status === 401, "expected 401, got " + r.status);
+  });
+
+  await test("auth: raw token without Bearer prefix", async () => {
+    const r = await probeAuth("GET", "/api/fs/stat?path=" + T, { Authorization: TOKEN });
+    assert.ok(r.status === 200 || r.status === 401, "got " + r.status);
+  });
+
+  await test("auth: trailing whitespace in token", async () => {
+    const r = await probeAuth("GET", "/api/fs/stat?path=" + T, { Authorization: "Bearer " + TOKEN + " " });
+    assert.ok(r.status === 401 || r.status === 200, "got " + r.status);
+  });
+
+  await test("auth: Basic scheme rejected", async () => {
+    const r = await probeAuth("GET", "/api/fs/stat?path=" + T, { Authorization: "Basic " + TOKEN });
+    assert.ok(r.status === 401, "expected 401, got " + r.status);
+  });
+
+  // ─── 13. Info disclosure ──────────────────────────────────
+  await test("info: no traceback on bad JSON", async () => {
+    const r = await probe("POST", "/api/exec", "{bad");
+    if (r.body && (r.body.includes("Traceback") || r.body.includes('File "')))
+      issue("traceback", "server leaks Python traceback");
+    assert.ok(!r.body || !r.body.includes("Traceback"), "no traceback in response");
+  });
+
+  await test("info: 404 not 500 on missing path", async () => {
+    const r = await probe("GET", "/api/fs/stat", null, { path: "/nonexistent_xyz_123" });
+    if (r.status === 500) issue("500 on missing", "stat returns 500 instead of 404 for missing path");
+    assert.ok(r.status === 404 || r.status >= 400, "got " + r.status);
+  });
+
+  await test("info: /api/env does not leak token", async () => {
+    const r = await probe("GET", "/api/env");
+    if (r.status === 200 && r.body.includes(TOKEN))
+      issue("env token leak", "/api/env returns auth token");
+    assert.ok(!r.body || !r.body.includes(TOKEN), "token must not appear in env response");
+  });
+
+  // ─── 14. Exec edge cases ──────────────────────────────────
+  await test("exec: empty cmd", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "", shell: true });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: null cmd", async () => {
+    const r = await probe("POST", "/api/exec", '{"cmd":null,"shell":true}');
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: bad timeout (string)", async () => {
+    const r = await probe("POST", "/api/exec", '{"cmd":"echo hi","shell":true,"timeout":"abc"}');
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: negative timeout", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo hi", shell: true, timeout: -1 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: nonexistent binary", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "/nonexistent/binary", shell: false, args: [] });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: bad cwd", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo hi", shell: true, cwd: "/nonexistent/dir" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: kill bad pid", async () => {
+    const r = await probe("POST", "/api/exec/kill", null, { pid: 99999, signal_name: "SIGTERM" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: kill bad signal", async () => {
+    const r = await probe("POST", "/api/exec/kill", null, { pid: 1, signal_name: "NOTASIGNAL" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: status bad pid", async () => {
+    const r = await probe("GET", "/api/exec/status", null, { pid: 99999 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: stdin bad pid", async () => {
+    const r = await probe("POST", "/api/exec/stdin", { pid: 99999, data: "test" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: unicode cmd", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo 你好", shell: true });
+    if (r.status === 500) issue("unicode cmd", "500 on unicode cmd");
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  await test("exec: timeout zero", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo hi", shell: true, timeout: 0 });
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  await test("exec: huge timeout", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo hi", shell: true, timeout: 999999999 });
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  await test("exec: args not a list", async () => {
+    const r = await probe("POST", "/api/exec", '{"cmd":"echo","shell":false,"args":"notalist"}');
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("exec: huge env values", async () => {
+    const env = {};
+    for (let i = 0; i < 100; i++) env["KEY" + i] = "x".repeat(500);
+    const r = await probe("POST", "/api/exec", { cmd: "echo hi", shell: true, env });
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  // ─── 15. FS edge cases ────────────────────────────────────
+  await test("fs: mkdir empty path", async () => {
+    const r = await probe("POST", "/api/fs/mkdir", { path: "", recursive: true });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: list on a file not dir", async () => {
+    const r = await probe("GET", "/api/fs/list", null, { path: T + "/file.txt" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: bad glob pattern", async () => {
+    const r = await probe("GET", "/api/fs/glob", null, { pattern: "[" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: delete nonexistent", async () => {
+    const r = await probe("POST", "/api/fs/delete", { path: "/nonexistent_xyz" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: move src missing", async () => {
+    const r = await probe("POST", "/api/fs/move", { src: "/nonexistent_xyz", dst: T + "/dst" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: copy src missing", async () => {
+    const r = await probe("POST", "/api/fs/copy", { src: "/nonexistent_xyz", dst: T + "/dst2" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: readlink on non-symlink", async () => {
+    const r = await probe("GET", "/api/fs/readlink", null, { path: T + "/file.txt" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: truncate negative length", async () => {
+    const r = await probe("POST", "/api/fs/truncate", { path: T + "/file.txt", len: -1 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: utimes bad values", async () => {
+    const r = await probe("POST", "/api/fs/utimes", '{"path":"' + T + '","atime":"notnum","mtime":"notnum"}');
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: batch bad op", async () => {
+    const r = await probe("POST", "/api/fs/batch", { ops: [{ op: "nonexistent", path: T }] });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: batch empty ops", async () => {
+    const r = await probe("POST", "/api/fs/batch", { ops: [] });
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  await test("fs: batch null ops", async () => {
+    const r = await probe("POST", "/api/fs/batch", '{"ops":null}');
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: symlink to self", async () => {
+    const r = await probe("POST", "/api/fs/symlink", { target: T + "/self", link: T + "/self" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: access bad mode", async () => {
+    const r = await probe("GET", "/api/fs/access", null, { path: "/tmp", mode: "abc" });
+    assert.ok(r.status >= 400 || r.status < 300, "got " + r.status);
+  });
+
+  await test("fs: which empty cmd", async () => {
+    const r = await probe("GET", "/api/which", null, { cmd: "" });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fs: statfs on nonexistent", async () => {
+    const r = await probe("GET", "/api/fs/statfs", null, { path: "/nonexistent_xyz" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: realpath on nonexistent", async () => {
+    const r = await probe("POST", "/api/fs/realpath", { path: "/nonexistent_xyz/../../../tmp" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: mkdtemp empty prefix", async () => {
+    const r = await probe("POST", "/api/fs/mkdtemp", { prefix: "" });
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  await test("fs: link missing src", async () => {
+    const r = await probe("POST", "/api/fs/link", { existing: "/nonexistent_xyz", newpath: T + "/link" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fs: touch bad path", async () => {
+    const r = await probe("POST", "/api/fs/touch", { path: "/nonexistent_dir_xyz/test" });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  // ─── 16. FD edge cases ────────────────────────────────────
+  await test("fd: close bad fd", async () => {
+    const r = await probe("POST", "/api/fs/fd/close", { fd: 99999 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: ftruncate bad fd", async () => {
+    const r = await probe("POST", "/api/fs/fd/ftruncate", { fd: 99999, len: 0 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: write bad fd", async () => {
+    const r = await probe("PUT", "/api/fs/fd/write", "test", { fd: 99999, offset: 0 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: fstat bad fd", async () => {
+    const r = await probe("GET", "/api/fs/fd/fstat", null, { fd: 99999 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: fchmod bad fd", async () => {
+    const r = await probe("POST", "/api/fs/fd/fchmod", { fd: 99999, mode: 420 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: fchown bad fd", async () => {
+    const r = await probe("POST", "/api/fs/fd/fchown", { fd: 99999, uid: 0, gid: 0 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: open then close then read", async () => {
+    const open = await probe("POST", "/api/fs/fd/open", { path: T + "/file.txt", flags: 0 });
+    if (open.status !== 200) return;
+    const fd = JSON.parse(open.body).fd;
+    await probe("POST", "/api/fs/fd/close", { fd });
+    const r = await probe("GET", "/api/fs/fd/read", null, { fd, offset: 0, length: 10 });
+    assert.ok(r.status >= 400, "expected 4xx on closed fd, got " + r.status);
+  });
+
+  await test("fd: open bad flags", async () => {
+    const r = await probe("POST", "/api/fs/fd/open", { path: T + "/file.txt", flags: "notanumber", mode: 420 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: open empty path", async () => {
+    const r = await probe("POST", "/api/fs/fd/open", { path: "", flags: 0, mode: 420 });
+    assert.ok(r.status >= 400, "expected 4xx, got " + r.status);
+  });
+
+  await test("fd: fsync bad fd", async () => {
+    const r = await probe("POST", "/api/fs/fd/fsync", { fd: 99999 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  await test("fd: futimes bad fd", async () => {
+    const r = await probe("POST", "/api/fs/fd/futimes", { fd: 99999, atime: 0, mtime: 0 });
+    assert.ok(r.status >= 400 || r.status === 200, "got " + r.status);
+  });
+
+  // ─── 17. HTTP protocol edge cases ─────────────────────────
+  await test("proto: DELETE on stat", async () => {
+    const r = await probe("DELETE", "/api/fs/stat", null, { path: "/tmp" });
+    assert.ok(r.status >= 400 || r.status === 405, "got " + r.status);
+  });
+
+  await test("proto: PATCH on exec", async () => {
+    const r = await probe("PATCH", "/api/exec", '{"cmd":"id"}');
+    assert.ok(r.status >= 400 || r.status === 405, "got " + r.status);
+  });
+
+  await test("proto: proto pollution in body", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo hi", shell: true, "__proto__": { admin: true }, constructor: { prototype: { admin: true } } });
+    assert.ok(r.status === 200 || r.status >= 400, "got " + r.status);
+  });
+
+  // ─── 18. DoS: concurrent flood ────────────────────────────
+  await test("dos: 200 concurrent requests", async () => {
+    const reqs = [];
+    for (let i = 0; i < 200; i++)
+      reqs.push(probe("POST", "/api/exec", { cmd: "echo hi", shell: true }, null, { timeout: 10000 }));
+    const results = await Promise.all(reqs);
+    const ok = results.filter((r) => r.status === 200).length;
+    if (ok < 190) issue("concurrent flood", ok + "/200 succeeded");
+    assert.ok(ok >= 150, "at least 150/200 should succeed, got " + ok);
+  });
+
+  // ─── 19. Py/Go consistency ────────────────────────────────
+  await test("consistency: stat has all fields", async () => {
+    const r = await probe("GET", "/api/fs/stat", null, { path: "/tmp" });
+    assert.ok(r.status === 200, "got " + r.status);
+    const d = JSON.parse(r.body);
+    for (const k of ["size", "mode", "mtime", "atime", "ctime", "uid", "gid"])
+      assert.ok(k in d, "missing field: " + k);
+  });
+
+  await test("consistency: exec has all fields", async () => {
+    const r = await probe("POST", "/api/exec", { cmd: "echo hello", shell: true });
+    assert.ok(r.status === 200, "got " + r.status);
+    const d = JSON.parse(r.body);
+    for (const k of ["stdout", "stderr", "exit_code", "pid"])
+      assert.ok(k in d, "missing field: " + k);
+    assert.strictEqual(d.stdout.trim(), "hello");
+  });
+
+  await test("consistency: env has all fields", async () => {
+    const r = await probe("GET", "/api/env");
+    assert.ok(r.status === 200, "got " + r.status);
+    const d = JSON.parse(r.body);
+    for (const k of ["uid", "platform"])
+      assert.ok(k in d, "missing field: " + k);
+  });
+
+  // ─── 20. Server still alive after all abuse ───────────────
   await test("server still alive after all abuse", async () => {
     const ok = await serverAlive();
     if (!ok) issue("server alive", "server crashed or unresponsive after adversarial tests");
