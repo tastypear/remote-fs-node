@@ -42,6 +42,7 @@ module.exports = {
   client,
   constants,
   promises: promisesApi,
+  syncBridge: require("./lib/sync-bridge"),
   default: fs,
 };
 
