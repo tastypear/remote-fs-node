@@ -40,6 +40,7 @@ module.exports = {
   isInBypass,
   isBindingPatched,
   client,
+  setCacheProvider: client.setCacheProvider,
   constants,
   promises: promisesApi,
   syncBridge: require("./lib/sync-bridge"),
