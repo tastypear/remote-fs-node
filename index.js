@@ -41,6 +41,7 @@ module.exports = {
   isBindingPatched,
   client,
   setCacheProvider: client.setCacheProvider,
+  setDebugLogger: client.setDebugLogger,
   constants,
   promises: promisesApi,
   syncBridge: require("./lib/sync-bridge"),
