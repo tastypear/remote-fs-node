@@ -1,6 +1,6 @@
 {
   "name": "remote-fs-node",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Node.js fs-compatible module backed by HTTP. Drop-in replacement for require('fs') that routes all operations to a remote server via process.binding('fs') interception.",
   "main": "index.js",
   "files": ["index.js", "lib/"],
